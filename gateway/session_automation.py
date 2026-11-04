@@ -404,6 +404,8 @@ def automation_notification_metadata(metadata):
 
 
 _DISPLAY_TEXT_LIMIT = 2000
+# One-line title bound for an automation admission that named no producer card.
+_FALLBACK_TITLE_LIMIT = 120
 
 
 def automation_display_metadata(metadata):
@@ -431,16 +433,42 @@ _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', '
     'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
 
 
+def _fallback_title(text):
+    """One bounded line of *text*: the card's title when the producer named none."""
+    line = next((line.strip() for line in text.splitlines() if line.strip()), '')
+    line = ' '.join(line.split())
+    if len(line) <= _FALLBACK_TITLE_LIMIT:
+        return line
+    head = line[:_FALLBACK_TITLE_LIMIT]
+    space = head.rfind(' ')
+    if space >= _FALLBACK_TITLE_LIMIT * 0.6:  # break at a word, unless that would drop most of the line
+        head = head[:space]
+    return head.rstrip(' ,;:—') + '…'
+
+
 def admission_display(payload):
-    """An automation admission's async-result card (plus its model text) for the claim's
-    ``message.start``: a viewer that did not submit the turn (the classic CLI, idle while a
-    background process it started finishes in the gateway) paints the same header the submitting
-    surface would. ``{}`` for every other input."""
-    descriptor = payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
-    kind, text = descriptor.get('display_kind'), descriptor.get('display_text')
-    if not kind or not isinstance(text, str) or not text.strip():
-        return {}
-    card = {'display_kind': kind, 'display_text': text, 'text': str(payload.get('text') or '')}
+    """An automation admission's row for the claim's ``message.start``: a viewer that did not
+    submit the turn (a Desktop or Bot Chat viewer, the classic CLI idle while a background process
+    it started finishes in the gateway) paints the same header the submitting surface would.
+
+    A producer that named its own card (an async result, a liveness tick's one-line receipt) is
+    published as it named it. Every other automation admission -- a cron report or a bot DM
+    delivered into the Bot Chat, a producer wake -- is published as the row it persists:
+    ``internal_notification`` (``gateway.response_filters.display_kind_for_event``) with its own
+    text and a one-line title. This frame is the only live carrier of that row; without a card a
+    connected viewer paints nothing and only a transcript reload shows the report. ``{}`` for a
+    typed turn, so an ordinary claim's start stays empty.
+    """
+    automation = payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation')
+    descriptor = automation or {}
+    text = payload.get('text')
+    kind, display = descriptor.get('display_kind'), descriptor.get('display_text')
+    if not kind or not isinstance(display, str) or not display.strip():
+        if not automation or not isinstance(text, str) or not text.strip():
+            return {}
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+        kind, display = INTERNAL_NOTIFICATION_DISPLAY_KIND, _fallback_title(text)
+    card = {'display_kind': kind, 'display_text': display, 'text': str(text or '')}
     if descriptor.get('notification_category') == 'diagnostic':
         card['notification_category'] = 'diagnostic'
     return card

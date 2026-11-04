@@ -179,7 +179,16 @@ def test_claim_stamp_carries_the_automation_card_on_message_start():
         "display_kind": "process_complete", "display_text": DISPLAY, "notification_category": "diagnostic"}}}
     assert admission_display(diagnostic)["notification_category"] == "diagnostic"
     assert admission_display({"text": "typed by the user"}) == {}
-    assert admission_display({"text": "x", "local_automation_v1": {"identity": "i"}}) == {}
+    # An automation admission that named no card still reaches a viewer as the row it persists
+    # (``internal_notification``): its frame is the only live carrier of that row.
+    assert admission_display({"text": "report", "local_automation_v1": {"identity": "i"}}) == {
+        "display_kind": "internal_notification", "display_text": "report", "text": "report"}
+    long = "head " + "x" * 400
+    card = admission_display({"text": long, "local_automation_v1": {"identity": "i"}})
+    assert card["display_text"].startswith("head xxx") and card["display_text"].endswith("…")
+    assert len(card["display_text"]) <= 121 and card["text"] == long
+    assert admission_display({"text": "boom", "local_automation_v1": {
+        "identity": "i", "notification_category": "diagnostic"}})["notification_category"] == "diagnostic"
 
 
 def _delegation_completion(goal):

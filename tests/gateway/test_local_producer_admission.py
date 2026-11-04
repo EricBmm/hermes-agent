@@ -454,3 +454,46 @@ async def test_a_served_profiles_desktop_session_admits_its_own_process_notices(
     await gateway.settled(secondary, sid, 3)
     assert [(turn.profile, turn.chat, turn.policy) for turn in gateway.turns] == [
         ('beta', sid, ('desk-model', str(gateway.tmp_path)))] * 3
+
+
+CRON_REPORT = ('[Cronjob "Morning check" output — scheduled job, not the user. Review it, act on '
+               'anything that needs action, and summarize for the chat.]\n\nAll green: 3 jobs.')
+
+
+@pytest.mark.asyncio
+async def test_a_bot_chat_report_reaches_an_attached_viewer_as_the_row_it_persists(gateway):
+    """A cron report delivered into the Bot Chat is persisted as an ``internal_notification`` user
+    row (#bot-chat). A viewer attached BEFORE the delivery must get that row on the claim's
+    ``message.start``: it is the only frame that carries a turn nobody submitted. Without the card
+    the frame was empty, so the report only appeared when the client reloaded the transcript."""
+    from gateway.session_controls import AuthorityConnection
+    from tests.gateway.fixtures.execution_frames_capture import Peer
+    secondary = gateway.secondary
+    sender = gateway.connect(secondary)
+    minted = await sender.dispatch({'id': 1, 'method': 'bot_relay.deliver', 'params': {
+        'id': 'a' * 32, 'profile': 'beta', 'message': 'first DM', 'author': AUTHOR}})
+    assert 'result' in minted, minted
+    chat = minted['result']['session_id']
+    await gateway.settled(secondary, chat, 1)
+
+    peer = Peer()
+    viewer = AuthorityConnection(secondary, peer, {'user_id': 'uid:1000'})
+    resumed = await viewer.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': chat}})
+    assert 'result' in resumed, resumed
+    delivered = await sender.dispatch({'id': 3, 'method': 'bot_relay.deliver', 'params': {
+        'id': 'b' * 32, 'profile': 'beta', 'message': CRON_REPORT}})
+    assert 'result' in delivered, delivered
+    await gateway.settled(secondary, chat, 2)
+
+    start = next(f for f in peer.drain('message.complete') if f['params']['type'] == 'message.start')
+    payload = start['params']['payload']
+    # The row this turn persists is typed by the same rule (a self-injected turn is machinery):
+    from types import SimpleNamespace
+    from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
+    kind = display_kind_for_event(SimpleNamespace(internal=True, metadata={}))
+    assert kind == INTERNAL_NOTIFICATION_DISPLAY_KIND
+    # The live frame names that row and carries its text: a viewer attached before the delivery
+    # paints the report now instead of waiting for a transcript reload.
+    assert (payload['display_kind'], payload['text']) == (kind, CRON_REPORT)
+    # The card's title is the report's own first line, bounded to one line (the text is whole).
+    assert payload['display_text'].startswith('[Cronjob "Morning check" output') and len(payload['display_text']) <= 121
